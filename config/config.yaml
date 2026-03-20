@@ -1,0 +1,100 @@
+data:
+  spot:
+    btc: "BTCUSDT"
+    eth: "ETHUSDT"
+  futures:
+    btc: "BTCUSDT"
+    eth: "ETHUSDT"
+  hyperliquid:
+    btc: "BTC"
+    eth: "ETH"
+  start_date: "2019-09-01"
+  binance_base_url: "https://api.binance.com"
+  binance_futures_url: "https://fapi.binance.com"
+  hyperliquid_url: "https://api.hyperliquid.xyz"
+  frequency: "8h"
+  periods_per_day: 3
+
+
+
+paths:
+  raw: "data/raw"
+  processed: "data/processed"
+  figures: "figures"
+  results: "results"
+  models: "models"
+
+
+features:
+  return_windows: [1, 3, 21, 90]
+  volatility_windows: [21, 42, 90]
+  funding_percentile_window: 270
+  volume_ma_windows: [21, 90]
+  correlation_window: 90
+  annualization_factor: 1095
+
+
+
+volatility:
+  garch_p: 1
+  garch_q: 1
+  garch_o: 1
+  distribution: "t"
+  rescale: true
+  max_persistence: 0.99
+
+
+regime:
+  n_states_range: [2, 3, 4, 5]
+  n_states_default: 3
+  n_iter: 200
+  n_init: 50
+  covariance_type: "full"
+  covariance_fallback: "diag"
+  min_state_observations: 20
+  random_state: 42
+  input_features:
+    - "btc_return_1p"
+    - "btc_range_1p"
+    - "btc_funding_rate"
+    - "btc_realized_vol_21p"
+
+
+
+signals:
+  funding_percentile_threshold: 0.95
+  volume_spike_threshold: 2.5
+  forward_windows: [3, 9, 21, 42]
+  cooldown_periods: 21
+
+
+backtest:
+  funding_entry_threshold: 0.0005
+  maker_fee_per_leg: 0.0002
+  taker_fee_per_leg: 0.0004
+  execution_mode: "maker"
+  fill_probability_base: 0.85
+  ofi_taker_threshold: 0.5
+  initial_margin_ratio: 0.5
+  margin_call_threshold: 0.2
+  max_position_duration: 90
+  hurdle_rate_annual: 0.05
+
+
+
+# Visual overlay ONLY,  NOT inputs to any model.
+crash_periods:
+  - name: "COVID Crash"
+    start: "2020-03-08"
+    end: "2020-03-20"
+  - name: "May 2021 Crash"
+    start: "2021-05-10"
+    end: "2021-05-25"
+  - name: "LUNA/UST Crash"
+    start: "2022-05-05"
+    end: "2022-05-15"
+  - name: "FTX Collapse"
+    start: "2022-11-06"
+    end: "2022-11-15"
+
+
