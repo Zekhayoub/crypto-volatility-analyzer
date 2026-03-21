@@ -231,5 +231,70 @@ def fetch_binance_funding_rate(
     return df
 
 
+def fetch_hyperliquid_funding(
+    coin: str,
+    start_date: str,
+    base_url: str,
+) -> pd.DataFrame:
+    """
+    Fetch DEX funding rates from Hyperliquid (1h native).
 
+    Note: Hyperliquid funding is HOURLY, not 8-hourly like Binance.
+    Normalization to 8h equivalent happens in a subsequent commit.
+
+    Args:
+        coin: Asset name ("BTC", "ETH") — from config.
+        start_date: Start date — from config.
+        base_url: Hyperliquid URL — from config.
+
+    Returns:
+        DataFrame with UTC DatetimeIndex and column: funding_rate_dex.
+    """
+    endpoint = f"{base_url}/info"
+    start_ts = int(pd.Timestamp(start_date).timestamp() * 1000)
+    all_records = []
+
+    logger.info("Fetching %s funding from Hyperliquid...", coin)
+
+    while True:
+        body = {"type": "fundingHistory", "coin": coin, "startTime": start_ts}
+
+        resp = request_with_retry("POST", endpoint, json=body)
+        data = resp.json()
+
+        if not data:
+            break
+
+        all_records.extend(data)
+
+        last_ts = data[-1].get("time", data[-1].get("timestamp", 0))
+        if isinstance(last_ts, str):
+            last_ts = int(pd.Timestamp(last_ts).timestamp() * 1000)
+        start_ts = last_ts + 1
+        time.sleep(0.1)
+
+        if len(data) < 500:
+            break
+
+    logger.info("  -> %d Hyperliquid records for %s", len(all_records), coin)
+
+    if not all_records:
+        logger.warning("No Hyperliquid data for %s", coin)
+        return pd.DataFrame(columns=["funding_rate_dex"])
+
+    df = pd.DataFrame(all_records)
+
+    if "time" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["time"], utc=True)
+    elif "timestamp" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+
+    df = df.set_index("timestamp")
+    df["funding_rate_dex"] = pd.to_numeric(
+        df.get("fundingRate", df.get("rate", 0)), errors="coerce"
+    )
+    df = df[["funding_rate_dex"]].sort_index()
+    df = df[~df.index.duplicated(keep="first")]
+
+    return df
 
