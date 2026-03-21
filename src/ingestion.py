@@ -174,3 +174,59 @@ def fetch_binance_klines(
     )
 
     return df
+
+
+def fetch_binance_funding_rate(
+    symbol: str,
+    start_date: str,
+    base_url: str,
+) -> pd.DataFrame:
+    """
+    Fetch perpetual funding rates from Binance Futures (8h native).
+
+    Args:
+        symbol: Futures pair (from config).
+        start_date: Start date (from config).
+        base_url: Binance Futures URL (from config).
+
+    Returns:
+        DataFrame with UTC DatetimeIndex and column: funding_rate.
+    """
+    endpoint = f"{base_url}/fapi/v1/fundingRate"
+    start_ts = int(pd.Timestamp(start_date).timestamp() * 1000)
+    all_records = []
+
+    logger.info("Fetching %s funding rate from %s...", symbol, start_date)
+
+    while True:
+        params = {"symbol": symbol, "startTime": start_ts, "limit": 1000}
+
+        resp = request_with_retry("GET", endpoint, params=params)
+        data = resp.json()
+
+        if not data:
+            break
+
+        all_records.extend(data)
+        start_ts = data[-1]["fundingTime"] + 1
+        time.sleep(0.1)
+
+        if len(data) < 1000:
+            break
+
+    logger.info("  -> %d funding records for %s", len(all_records), symbol)
+
+    if not all_records:
+        raise ValueError(f"No funding rate data for {symbol}")
+
+    df = pd.DataFrame(all_records)
+    df["timestamp"] = pd.to_datetime(df["fundingTime"], unit="ms", utc=True)
+    df = df.set_index("timestamp")
+    df["funding_rate"] = pd.to_numeric(df["fundingRate"], errors="coerce")
+    df = df[["funding_rate"]].sort_index()
+
+    return df
+
+
+
+
