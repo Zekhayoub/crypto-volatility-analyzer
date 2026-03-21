@@ -225,6 +225,9 @@ def fetch_binance_funding_rate(
     df["funding_rate"] = pd.to_numeric(df["fundingRate"], errors="coerce")
     df = df[["funding_rate"]].sort_index()
 
+    df = df[~df.index.duplicated(keep="first")]
+    logger.info("  -> %d unique records after dedup", len(df))
+
     return df
 
 
