@@ -53,21 +53,31 @@ def request_with_retry(
         except requests.exceptions.HTTPError as e:
             status = getattr(resp, "status_code", None)
             if status == 429:
-                wait = 2 ** attempt
+                wait = 2**attempt
                 logger.warning("  Rate limited (429). Waiting %ds...", wait)
                 time.sleep(wait)
             elif attempt < max_retries:
                 wait = 2 ** (attempt - 1)
-                logger.warning("  Attempt %d/%d failed (HTTP %s). Retrying in %ds...",
-                               attempt, max_retries, status, wait)
+                logger.warning(
+                    "  Attempt %d/%d failed (HTTP %s). Retrying in %ds...",
+                    attempt,
+                    max_retries,
+                    status,
+                    wait,
+                )
                 time.sleep(wait)
             else:
                 raise
         except Exception as e:
             if attempt < max_retries:
                 wait = 2 ** (attempt - 1)
-                logger.warning("  Attempt %d/%d failed: %s. Retrying in %ds...",
-                               attempt, max_retries, e, wait)
+                logger.warning(
+                    "  Attempt %d/%d failed: %s. Retrying in %ds...",
+                    attempt,
+                    max_retries,
+                    e,
+                    wait,
+                )
                 time.sleep(wait)
             else:
                 raise
@@ -75,11 +85,19 @@ def request_with_retry(
     raise RuntimeError(f"All {max_retries} attempts failed for {url}")
 
 
-
 KLINE_COLUMNS = {
-    0: "open_time_ms", 1: "open", 2: "high", 3: "low", 4: "close",
-    5: "volume", 6: "close_time_ms", 7: "quote_volume", 8: "n_trades",
-    9: "taker_buy_volume", 10: "taker_buy_quote_volume", 11: "ignore",
+    0: "open_time_ms",
+    1: "open",
+    2: "high",
+    3: "low",
+    4: "close",
+    5: "volume",
+    6: "close_time_ms",
+    7: "quote_volume",
+    8: "n_trades",
+    9: "taker_buy_volume",
+    10: "taker_buy_quote_volume",
+    11: "ignore",
 }
 
 
@@ -113,8 +131,10 @@ def fetch_binance_klines(
 
     while True:
         params = {
-            "symbol": symbol, "interval": interval,
-            "startTime": start_ts, "limit": 1000,
+            "symbol": symbol,
+            "interval": interval,
+            "startTime": start_ts,
+            "limit": 1000,
         }
 
         resp = request_with_retry("GET", endpoint, params=params)
@@ -141,10 +161,16 @@ def fetch_binance_klines(
     for col in ["open", "high", "low", "close", "volume", "taker_buy_volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
+
+    # Binance timestamps are MILLISECONDS. Without unit="ms", dates are year 50000+.
+    # utc=True prevents tz-naive/tz-aware crash when merging with Hyperliquid.
+    df["timestamp"] = pd.to_datetime(df["open_time_ms"], unit="ms", utc=True)
+    df = df.set_index("timestamp").sort_index()
+    df = df[["open", "high", "low", "close", "volume", "taker_buy_volume"]]
+    df = df[~df.index.duplicated(keep="first")]
+
+    logger.info(
+        "  -> %d klines parsed, %s to %s", len(df), df.index.min(), df.index.max()
+    )
+
     return df
-
-
-
-
-
-
