@@ -342,6 +342,72 @@ def normalize_funding_rate(
 
 
 
+# def fetch_binance_open_interest(
+#     symbol: str,
+#     start_date: str,
+#     base_url: str,
+# ) -> pd.DataFrame:
+#     """
+#     Fetch historical open interest from Binance Futures.
+
+#     Returns OI in COINS (not USD) to avoid the nominal illusion:
+#     BTC $50k→$60k = USD OI +20% with zero new contracts.
+#     Coin-margined OI measures true leverage.
+
+#     Args:
+#         symbol, start_date, base_url: all from config.
+
+#     Returns:
+#         DataFrame with open_interest_usd and open_interest_coins.
+#     """
+#     endpoint = f"{base_url}/futures/data/openInterestHist"
+#     all_records = []
+
+#     logger.info("Fetching %s open interest...", symbol)
+
+#     current = pd.Timestamp(start_date, tz="UTC")
+#     end = pd.Timestamp.now(tz="UTC")
+
+#     while current < end:
+#         chunk_end = min(current + pd.Timedelta(days=30), end)
+
+#         params = {
+#             "symbol": symbol, "period": "1d",
+#             "startTime": int(current.timestamp() * 1000),
+#             "endTime": int(chunk_end.timestamp() * 1000),
+#             "limit": 500,
+#         }
+
+#         resp = request_with_retry("GET", endpoint, params=params)
+#         data = resp.json()
+#         if data:
+#             all_records.extend(data)
+
+#         current = chunk_end + pd.Timedelta(days=1)
+#         time.sleep(0.1)
+
+#     logger.info("  -> %d OI records for %s", len(all_records), symbol)
+
+#     if not all_records:
+#         logger.warning("No OI data for %s", symbol)
+#         return pd.DataFrame(columns=["open_interest_usd", "open_interest_coins"])
+
+#     df = pd.DataFrame(all_records)
+#     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+#     df = df.set_index("timestamp").sort_index()
+
+#     df["open_interest_usd"] = pd.to_numeric(df["sumOpenInterestValue"], errors="coerce")
+#     if "sumOpenInterest" in df.columns:
+#         df["open_interest_coins"] = pd.to_numeric(df["sumOpenInterest"], errors="coerce")
+#     else:
+#         df["open_interest_coins"] = np.nan
+
+#     df = df[["open_interest_usd", "open_interest_coins"]]
+#     df = df[~df.index.duplicated(keep="first")]
+
+#     return df
+
+
 def fetch_binance_open_interest(
     symbol: str,
     start_date: str,
@@ -378,10 +444,22 @@ def fetch_binance_open_interest(
             "limit": 500,
         }
 
-        resp = request_with_retry("GET", endpoint, params=params)
-        data = resp.json()
-        if data:
-            all_records.extend(data)
+        try:
+            #resp = request_with_retry("GET", endpoint, params=params)
+            resp = requests.get(endpoint, params=params, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            if data:
+                all_records.extend(data)
+        except requests.exceptions.HTTPError as e:
+            if getattr(e.response, "status_code", None) == 400:
+                pass
+            else:
+                logger.warning("Erreur HTTP pour OI: %s", e)
+                #raise  
+        except Exception as e:
+            logger.warning("Autre erreur pour OI: %s", e)
+
 
         current = chunk_end + pd.Timedelta(days=1)
         time.sleep(0.1)
@@ -600,6 +678,25 @@ def downcast_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def validate_ranges(df: pd.DataFrame) -> None:
+    """Sanity check on value ranges. Logs warnings."""
+    checks = {
+        "btc_close": (100, 200000),
+        "eth_close": (1, 20000),
+        "btc_funding_rate": (-0.05, 0.05),
+        "btc_volume": (0, None),
+        "btc_ofi": (-1, 1),
+    }
+    for col, (lo, hi) in checks.items():
+        if col not in df.columns:
+            continue
+        if lo is not None and (df[col] < lo).any():
+            logger.warning("%s: %d values below %.4f", col, (df[col] < lo).sum(), lo)
+        if hi is not None and (df[col] > hi).any():
+            logger.warning("%s: %d values above %.4f", col, (df[col] > hi).sum(), hi)
+    logger.info("Range validation complete")
+
+
 
 def save_raw(df: pd.DataFrame, name: str, config: dict = CONFIG) -> None:
     """Save raw DataFrame to data/raw/."""
@@ -650,6 +747,7 @@ def run_ingestion(config: dict = CONFIG) -> tuple[pd.DataFrame, pd.DataFrame]:
     save_raw(eth_fund, "eth_funding_cex", config)
 
     # --- Binance OI ---
+    #oi_start = start if start >= "2020-01-01" else "2020-01-01"
     btc_oi = fetch_binance_open_interest(d["futures"]["btc"], start, f_url)
     save_raw(btc_oi, "btc_open_interest", config)
 
@@ -676,6 +774,7 @@ def run_ingestion(config: dict = CONFIG) -> tuple[pd.DataFrame, pd.DataFrame]:
     df = fill_timestamp_gaps(df)
     df, trading_mask = clean_master(df)
     df = downcast_dtypes(df)
+    validate_ranges(df)
 
     # --- Save ---
     save_master(df, config)
