@@ -489,3 +489,19 @@ def merge_all_sources(
     return df
 
 
+def fill_timestamp_gaps(df: pd.DataFrame, max_gap: int = 3) -> pd.DataFrame:
+    """
+    Reindex to complete 8h UTC grid. Forward-fill short gaps only.
+    Gaps > max_gap periods left as NaN.
+    """
+    full_idx = pd.date_range(df.index.min(), df.index.max(), freq="8h", tz="UTC")
+    n_missing = len(full_idx) - len(df)
+    if n_missing > 0:
+        logger.info("  Filling %d missing 8h periods (max_gap=%d)", n_missing, max_gap)
+    df = df.reindex(full_idx)
+    df.index.name = "timestamp"
+    df = df.ffill(limit=max_gap)
+    return df
+
+
+
