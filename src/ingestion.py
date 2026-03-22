@@ -505,3 +505,23 @@ def fill_timestamp_gaps(df: pd.DataFrame, max_gap: int = 3) -> pd.DataFrame:
 
 
 
+
+
+def compute_raw_ofi(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute Order Flow Imbalance from taker buy/sell volume.
+
+    OFI = (taker_buy - taker_sell) / total_volume ∈ [-1, +1].
+    Positive = buyers sweeping (bullish). Negative = toxic flow.
+    """
+    for asset in ["btc", "eth"]:
+        vol = f"{asset}_volume"
+        taker = f"{asset}_taker_buy_volume"
+        if vol in df.columns and taker in df.columns:
+            sell = df[vol] - df[taker]
+            df[f"{asset}_ofi"] = np.where(df[vol] != 0, (df[taker] - sell) / df[vol], 0.0)
+            logger.info("Computed %s OFI", asset.upper())
+    return df
+
+
+
