@@ -524,4 +524,64 @@ def compute_raw_ofi(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def clean_master(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Clean master DataFrame. Separate treatment for prices and volumes.
+
+    CRITICAL: Missing volume = ZERO, not forward-fill.
+    Forward-filling volume during exchange maintenance creates phantom
+    liquidity (e.g., 15k BTC of fake volume). This corrupts OFI,
+    volume moving averages, and all volume-based features.
+
+    Rule: price stays flat during gaps, volume drops to zero.
+    """
+    logger.info("Cleaning master DataFrame (%d rows)...", len(df))
+
+    # 1. Trading mask (True where real trading activity existed)
+    trading_mask = (df["btc_volume"] > 0) & (df["btc_close"].notna())
+
+    # 2a. Forward-fill CLOSE prices (price stays flat during gaps)
+    close_cols = [c for c in df.columns if "close" in c]
+    df[close_cols] = df[close_cols].ffill(limit=1)
+
+    # 2b. Open, High, Low during missing periods = flat at Close
+    for asset in ["btc", "eth"]:
+        close_col = f"{asset}_close"
+        if close_col not in df.columns:
+            continue
+        for suffix in ["open", "high", "low"]:
+            col = f"{asset}_{suffix}"
+            if col in df.columns:
+                df[col] = df[col].fillna(df[close_col])
+
+    # 2c. CRITICAL: Missing volume = ZERO (not forward-fill!)
+    vol_cols = [c for c in df.columns if "volume" in c or "taker" in c]
+    df[vol_cols] = df[vol_cols].fillna(0.0)
+
+    # 2d. Forward-fill funding and OI (non-price, non-volume)
+    fill_cols = [c for c in df.columns if "funding" in c or "oi" in c]
+    df[fill_cols] = df[fill_cols].ffill(limit=3)
+
+    # 3. Drop rows without BTC close
+    rows_before = len(df)
+    df = df.dropna(subset=["btc_close"])
+    logger.info("  Dropped %d rows without BTC price", rows_before - len(df))
+
+    # 4. Recompute OFI after volume fix (OFI was computed before clean)
+    df = compute_raw_ofi(df)
+
+    # 5. Align mask
+    trading_mask = trading_mask.reindex(df.index).fillna(False)
+
+    # 6. Assertions
+    assert df["btc_close"].isna().sum() == 0, "BTC close has NaN"
+    assert len(df) > 1000, f"Only {len(df)} rows"
+
+    logger.info("  Cleaned: %d rows, trading periods: %d (%.1f%%)",
+                len(df), trading_mask.sum(), trading_mask.mean() * 100)
+
+    return df, trading_mask
+
+
+
 
