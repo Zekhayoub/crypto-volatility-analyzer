@@ -27,7 +27,7 @@ def compute_log_returns(
     """
     Compute log returns over multiple horizons.
 
-    Note: Forward-filled prices during maintenance produce returns of 0.0.
+    Note: trading_mask : Forward-filled prices during maintenance produce returns of 0.0.
     These artificial zeros will be handled by the trading_mask when
     computing volatility (commit 25). The returns themselves are kept
     as-is because a flat price IS the correct observation during a gap.
