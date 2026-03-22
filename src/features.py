@@ -19,6 +19,40 @@ logger = logging.getLogger(__name__)
 ASSETS = ["btc", "eth"]
 
 
+
+def sanitize_ohlc(df: pd.DataFrame, asset: str) -> pd.DataFrame:
+    """
+    Drop or fix corrupted klines where high < low.
+
+    In crypto there are no stock splits or dividend adjustments.
+    If high < low, the data is corrupted (API anomaly).
+
+    Args:
+        df: DataFrame with OHLC columns.
+        asset: Asset prefix ("btc" or "eth").
+
+    Returns:
+        DataFrame with corrupted rows handled.
+    """
+    h = f"{asset}_high"
+    l = f"{asset}_low"
+
+    if h in df.columns and l in df.columns:
+        corrupted = df[h] < df[l]
+        n = corrupted.sum()
+        if n > 0:
+            logger.warning("  %s: %d corrupted klines (high < low) — setting to NaN", asset.upper(), n)
+            for col in [f"{asset}_open", h, l, f"{asset}_close"]:
+                if col in df.columns:
+                    df.loc[corrupted, col] = np.nan
+            # Forward-fill the NaN (short gap)
+            df[[f"{asset}_open", h, l, f"{asset}_close"]] = \
+                df[[f"{asset}_open", h, l, f"{asset}_close"]].ffill(limit=1)
+
+    return df
+
+
+
 def compute_log_returns(
     close: pd.Series,
     windows: list[int],
