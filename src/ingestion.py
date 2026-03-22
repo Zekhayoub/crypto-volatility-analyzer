@@ -585,3 +585,133 @@ def clean_master(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 
+
+
+def save_raw(df: pd.DataFrame, name: str, config: dict = CONFIG) -> None:
+    """Save raw DataFrame to data/raw/."""
+    raw_dir = PROJECT_ROOT / config["paths"]["raw"]
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    path = raw_dir / f"{name}.csv"
+    df.to_csv(path)
+    logger.info("Saved raw: %s (%d rows)", path, len(df))
+
+
+
+
+def save_master(df: pd.DataFrame, config: dict = CONFIG) -> Path:
+    """Save master DataFrame to data/processed/master.csv."""
+    proc_dir = PROJECT_ROOT / config["paths"]["processed"]
+    proc_dir.mkdir(parents=True, exist_ok=True)
+    path = proc_dir / "master.csv"
+    df.to_csv(path)
+    logger.info("Saved master: %s (%d x %d)", path, len(df), len(df.columns))
+    return path
+
+
+
+
+def run_ingestion(config: dict = CONFIG) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Main entry point. Fetches all sources, merges, cleans, saves.
+
+    DEX calls are wrapped in try/except — if Hyperliquid is down,
+    the pipeline continues with CEX data only (production resilience).
+    """
+    d = config["data"]
+    start = d["start_date"]
+    b_url = d["binance_base_url"]
+    f_url = d["binance_futures_url"]
+    h_url = d["hyperliquid_url"]
+
+    # --- Binance Spot ---
+    btc_spot = fetch_binance_klines(d["spot"]["btc"], "8h", start, b_url)
+    save_raw(btc_spot, "btc_spot_8h", config)
+    eth_spot = fetch_binance_klines(d["spot"]["eth"], "8h", start, b_url)
+    save_raw(eth_spot, "eth_spot_8h", config)
+
+    # --- Binance Funding ---
+    btc_fund = fetch_binance_funding_rate(d["futures"]["btc"], start, f_url)
+    save_raw(btc_fund, "btc_funding_cex", config)
+    eth_fund = fetch_binance_funding_rate(d["futures"]["eth"], start, f_url)
+    save_raw(eth_fund, "eth_funding_cex", config)
+
+    # --- Binance OI ---
+    btc_oi = fetch_binance_open_interest(d["futures"]["btc"], "2020-01-01", f_url)
+    save_raw(btc_oi, "btc_open_interest", config)
+
+    # --- Hyperliquid (resilient) ---
+    try:
+        btc_fd = fetch_hyperliquid_funding(d["hyperliquid"]["btc"], "2023-01-01", h_url)
+        btc_fd = normalize_funding_rate(btc_fd, "funding_rate_dex", "hyperliquid")
+        save_raw(btc_fd, "btc_funding_dex", config)
+    except Exception as e:
+        logger.warning("Hyperliquid BTC failed: %s — continuing without DEX", e)
+        btc_fd = pd.DataFrame(columns=["funding_rate_dex"])
+
+    try:
+        eth_fd = fetch_hyperliquid_funding(d["hyperliquid"]["eth"], "2023-01-01", h_url)
+        eth_fd = normalize_funding_rate(eth_fd, "funding_rate_dex", "hyperliquid")
+        save_raw(eth_fd, "eth_funding_dex", config)
+    except Exception as e:
+        logger.warning("Hyperliquid ETH failed: %s — continuing without DEX", e)
+        eth_fd = pd.DataFrame(columns=["funding_rate_dex"])
+
+    # --- Merge + OFI + Clean ---
+    df = merge_all_sources(btc_spot, eth_spot, btc_fund, eth_fund, btc_oi, btc_fd, eth_fd)
+    df = compute_raw_ofi(df)
+    df = fill_timestamp_gaps(df)
+    df, trading_mask = clean_master(df)
+
+    # --- Save ---
+    save_master(df, config)
+    mask_path = PROJECT_ROOT / config["paths"]["processed"] / "trading_mask.csv"
+    trading_mask.to_csv(mask_path)
+    logger.info("Saved trading mask: %s", mask_path)
+
+    return df, trading_mask
+
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    )
+    df, mask = run_ingestion()
+    print(f"\nMaster: {df.shape[0]} rows x {df.shape[1]} cols")
+    print(f"Range: {df.index.min()} to {df.index.max()}")
+    print(f"Trading periods: {mask.sum()} ({mask.mean()*100:.1f}%)")
+    print(f"NaN: {df.isna().sum().sum()}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
