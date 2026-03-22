@@ -47,3 +47,47 @@ def compute_log_returns(
 
 
 
+
+def compute_realized_volatility(
+    returns_1p: pd.Series,
+    windows: list[int],
+    asset: str,
+    ann_factor: int = 1095,
+    trading_mask: pd.Series | None = None,
+) -> pd.DataFrame:
+    """
+    Rolling realized volatility (annualized).
+
+    If trading_mask is provided, artificial zero returns from
+    forward-filled maintenance periods are excluded. Without this,
+    zero returns compress the rolling std and underestimate risk.
+
+    Annualization uses sqrt(1095) = sqrt(365 * 3), which assumes
+    i.i.d. returns. Given intraday autocorrelation in crypto, this
+    is a standard underestimation of true annualized risk.
+
+    Args:
+        returns_1p: 1-period log returns.
+        windows: Rolling windows in 8h periods.
+        asset: Asset prefix.
+        ann_factor: Periods per year (1095 for 8h).
+        trading_mask: Boolean — True for real trading periods.
+
+    Returns:
+        DataFrame with columns: {asset}_realized_vol_{N}p
+    """
+    returns = returns_1p.copy()
+
+    if trading_mask is not None:
+        # Exclude maintenance periods (returns = 0.0 from forward-fill)
+        returns = returns.where(trading_mask)
+        logger.debug("Volatility: excluded %d non-trading periods", (~trading_mask).sum())
+
+    result = pd.DataFrame(index=returns_1p.index)
+    for w in windows:
+        vol = returns.rolling(w, min_periods=w // 2).std() * np.sqrt(ann_factor)
+        result[f"{asset}_realized_vol_{w}p"] = vol
+
+    return result
+
+
