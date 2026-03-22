@@ -214,3 +214,34 @@ def compute_garman_klass_volatility(
     return vol
 
 
+def compute_funding_zscore(
+    funding: pd.Series,
+    window: int,
+    asset: str,
+) -> pd.Series:
+    """
+    Rolling z-score on funding rate.
+
+    First version — will be replaced by empirical percentiles
+    because the funding rate is CAPPED by exchange rules (~0.03%).
+    When funding hits the cap for weeks, std crushes to zero and
+    z-score explodes to +15σ artificially.
+
+    Args:
+        funding: Funding rate series.
+        window: Rolling window.
+        asset: Asset prefix.
+
+    Returns:
+        Series: {asset}_funding_zscore_{window}p
+    """
+    roll_mean = funding.rolling(window, min_periods=window // 2).mean()
+    roll_std = funding.rolling(window, min_periods=window // 2).std()
+
+    zscore = np.where(roll_std > 1e-10, (funding - roll_mean) / roll_std, 0.0)
+
+    return pd.Series(zscore, index=funding.index, name=f"{asset}_funding_zscore_{window}p")
+
+
+
+
