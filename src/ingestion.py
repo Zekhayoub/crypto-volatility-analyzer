@@ -636,12 +636,12 @@ def run_ingestion(config: dict = CONFIG) -> tuple[pd.DataFrame, pd.DataFrame]:
     save_raw(eth_fund, "eth_funding_cex", config)
 
     # --- Binance OI ---
-    btc_oi = fetch_binance_open_interest(d["futures"]["btc"], "2020-01-01", f_url)
+    btc_oi = fetch_binance_open_interest(d["futures"]["btc"], start, f_url)
     save_raw(btc_oi, "btc_open_interest", config)
 
     # --- Hyperliquid (resilient) ---
     try:
-        btc_fd = fetch_hyperliquid_funding(d["hyperliquid"]["btc"], "2023-01-01", h_url)
+        btc_fd = fetch_hyperliquid_funding(d["hyperliquid"]["btc"], start, h_url)
         btc_fd = normalize_funding_rate(btc_fd, "funding_rate_dex", "hyperliquid")
         save_raw(btc_fd, "btc_funding_dex", config)
     except Exception as e:
@@ -649,7 +649,7 @@ def run_ingestion(config: dict = CONFIG) -> tuple[pd.DataFrame, pd.DataFrame]:
         btc_fd = pd.DataFrame(columns=["funding_rate_dex"])
 
     try:
-        eth_fd = fetch_hyperliquid_funding(d["hyperliquid"]["eth"], "2023-01-01", h_url)
+        eth_fd = fetch_hyperliquid_funding(d["hyperliquid"]["eth"], start, h_url)
         eth_fd = normalize_funding_rate(eth_fd, "funding_rate_dex", "hyperliquid")
         save_raw(eth_fd, "eth_funding_dex", config)
     except Exception as e:
