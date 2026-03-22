@@ -409,3 +409,83 @@ def fetch_binance_open_interest(
 
 
 
+def _enforce_utc(df: pd.DataFrame) -> pd.DataFrame:
+    """Force UTC on a DataFrame index. Safety net for merge."""
+    if not df.empty and df.index.tz is None:
+        df.index = df.index.tz_localize("UTC")
+        logger.warning("  Forced UTC on a tz-naive source")
+    return df
+
+
+
+
+def merge_all_sources(
+    spot_btc: pd.DataFrame,
+    spot_eth: pd.DataFrame,
+    funding_btc: pd.DataFrame,
+    funding_eth: pd.DataFrame,
+    oi_btc: pd.DataFrame,
+    funding_btc_dex: pd.DataFrame,
+    funding_eth_dex: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Merge all sources into a single master DataFrame at 8h UTC.
+
+    Inner join on spot + CEX funding. Left join on OI and DEX.
+    UTC enforced on all inputs as safety net.
+    OI resampled from daily to 8h. OI coins normalized if missing.
+    """
+    logger.info("Merging all sources...")
+
+    # UTC safety net
+    for src in [spot_btc, spot_eth, funding_btc, funding_eth,
+                oi_btc, funding_btc_dex, funding_eth_dex]:
+        _enforce_utc(src)
+
+    # Prefix columns
+    btc_s = spot_btc.rename(columns={
+        "open": "btc_open", "high": "btc_high", "low": "btc_low",
+        "close": "btc_close", "volume": "btc_volume",
+        "taker_buy_volume": "btc_taker_buy_volume",
+    })
+    eth_s = spot_eth.rename(columns={
+        "open": "eth_open", "high": "eth_high", "low": "eth_low",
+        "close": "eth_close", "volume": "eth_volume",
+        "taker_buy_volume": "eth_taker_buy_volume",
+    })
+    btc_f = funding_btc.rename(columns={"funding_rate": "btc_funding_rate"})
+    eth_f = funding_eth.rename(columns={"funding_rate": "eth_funding_rate"})
+    btc_fd = funding_btc_dex.rename(columns={"funding_rate_dex": "btc_funding_rate_dex"})
+    eth_fd = funding_eth_dex.rename(columns={"funding_rate_dex": "eth_funding_rate_dex"})
+
+    # Resample OI daily → 8h
+    if not oi_btc.empty:
+        oi_8h = oi_btc.resample("8h").ffill().rename(columns={
+            "open_interest_usd": "btc_oi_usd",
+            "open_interest_coins": "btc_oi_coins",
+        })
+    else:
+        oi_8h = pd.DataFrame()
+
+    # Merge
+    df = btc_s.join(eth_s, how="inner")
+    df = df.join(btc_f, how="inner")
+    df = df.join(eth_f, how="left")
+    if not oi_8h.empty:
+        df = df.join(oi_8h, how="left")
+    if not btc_fd.empty:
+        df = df.join(btc_fd, how="left")
+    if not eth_fd.empty:
+        df = df.join(eth_fd, how="left")
+
+    # OI coins normalization
+    if "btc_oi_usd" in df.columns and "btc_oi_coins" in df.columns:
+        mask = df["btc_oi_coins"].isna() & df["btc_oi_usd"].notna()
+        df.loc[mask, "btc_oi_coins"] = df.loc[mask, "btc_oi_usd"] / df.loc[mask, "btc_close"]
+
+    logger.info("Merged: %d rows x %d cols, %s to %s",
+                len(df), len(df.columns), df.index.min(), df.index.max())
+
+    return df
+
+
