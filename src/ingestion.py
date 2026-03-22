@@ -583,7 +583,21 @@ def clean_master(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     return df, trading_mask
 
 
+def downcast_dtypes(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Downcast float64 → float32 where precision allows.
 
+    Prices stay float64 (BTC $100k needs precision).
+    Funding, OFI, ratios → float32 (halves memory).
+    Production habit for a Rust-first firm.
+    """
+    candidates = [c for c in df.columns
+                  if any(k in c for k in ["funding", "ofi", "ratio"])]
+    for col in candidates:
+        if df[col].dtype == np.float64:
+            df[col] = df[col].astype(np.float32)
+    logger.info("Downcast %d columns to float32", len(candidates))
+    return df
 
 
 
@@ -661,6 +675,7 @@ def run_ingestion(config: dict = CONFIG) -> tuple[pd.DataFrame, pd.DataFrame]:
     df = compute_raw_ofi(df)
     df = fill_timestamp_gaps(df)
     df, trading_mask = clean_master(df)
+    df = downcast_dtypes(df)
 
     # --- Save ---
     save_master(df, config)
