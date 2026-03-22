@@ -332,6 +332,11 @@ def normalize_funding_rate(
             logger.info("  Normalized %s: de-annualized", source)
         else:
             logger.info("  %s funding already in decimal format", source)
+        # CRITICAL: Hyperliquid funding is HOURLY. Binance is 8-HOURLY.
+        # Without this scaling, CEX vs DEX comparison shows a phantom 8x gap.
+        # 0.00125% per hour × 8 = 0.01% per 8h = same as Binance.
+        df[col] = df[col] * 8
+        logger.info("  Scaled %s: 1h rate × 8 → 8h equivalent", source)
 
     return df
 
