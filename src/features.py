@@ -47,7 +47,6 @@ def compute_log_returns(
 
 
 
-
 def compute_realized_volatility(
     returns_1p: pd.Series,
     windows: list[int],
@@ -89,5 +88,95 @@ def compute_realized_volatility(
         result[f"{asset}_realized_vol_{w}p"] = vol
 
     return result
+
+
+
+def compute_parkinson_volatility(
+    high: pd.Series,
+    low: pd.Series,
+    window: int,
+    asset: str,
+    ann_factor: int = 1095,
+) -> pd.Series:
+    """
+    Parkinson range-based volatility estimator (annualized).
+
+    Uses high-low range assuming continuous Brownian motion.
+    WARNING: In crypto, liquidation wicks create discontinuous jumps
+    that inflate the high-low range. This estimator OVERESTIMATES
+    volatility during wick events. See Garman-Klass note below.
+
+    Args:
+        high, low: High and low price series.
+        window: Rolling window in 8h periods.
+        asset: Asset prefix.
+        ann_factor: Periods per year.
+
+    Returns:
+        Series: {asset}_parkinson_vol_{window}p
+    """
+    hl_log = np.log(high / low)
+    pk_var = (hl_log ** 2) / (4 * np.log(2))
+    rolling_pk = pk_var.rolling(window, min_periods=window // 2).mean()
+    vol = np.sqrt(rolling_pk) * np.sqrt(ann_factor)
+    vol.name = f"{asset}_parkinson_vol_{window}p"
+    return vol
+
+
+def compute_garman_klass_volatility(
+    open_price: pd.Series,
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    window: int,
+    asset: str,
+    ann_factor: int = 1095,
+) -> pd.Series:
+    """
+    Garman-Klass volatility estimator using full OHLC data (annualized).
+
+    Optionally accelerated via Rust (PyO3). Falls back to Python if
+    the Rust module is not built.
+
+    WARNING: Like Parkinson, GK assumes continuous diffusion. In crypto,
+    liquidation cascades create jump discontinuities where price
+    teleports through empty order book levels. GK is a LOWER-BOUND
+    estimator during extreme stress (jumps are not captured).
+    Future work: Bipower Variation to isolate continuous vs jump vol.
+
+    Args:
+        open_price, high, low, close: OHLC series.
+        window: Rolling window.
+        asset: Asset prefix.
+        ann_factor: Periods per year.
+
+    Returns:
+        Series: {asset}_gk_vol_{window}p
+    """
+    # Try Rust implementation first
+    try:
+        from crypto_volatility_rust import garman_klass_volatility as _gk_rust
+        result = _gk_rust(
+            np.ascontiguousarray(open_price.values, dtype=np.float64),
+            np.ascontiguousarray(high.values, dtype=np.float64),
+            np.ascontiguousarray(low.values, dtype=np.float64),
+            np.ascontiguousarray(close.values, dtype=np.float64),
+            window,
+            float(ann_factor),
+        )
+        logger.info("  Using Rust Garman-Klass (zero-copy FFI)")
+        vol = pd.Series(result, index=close.index, name=f"{asset}_gk_vol_{window}p")
+        return vol
+    except ImportError:
+        logger.info("  Rust module not available — using Python Garman-Klass fallback")
+
+    # Python fallback
+    hl = np.log(high / low)
+    co = np.log(close / open_price)
+    gk_var = 0.5 * hl ** 2 - (2 * np.log(2) - 1) * co ** 2
+    rolling_gk = gk_var.rolling(window, min_periods=window // 2).mean()
+    vol = np.sqrt(rolling_gk.clip(lower=0)) * np.sqrt(ann_factor)
+    vol.name = f"{asset}_gk_vol_{window}p"
+    return vol
 
 
