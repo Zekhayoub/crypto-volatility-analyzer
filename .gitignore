@@ -8,5 +8,4 @@ models/*.pkl
 *.pyc
 rust/target/
 pipeline.log
-
-
+notes/

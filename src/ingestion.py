@@ -298,3 +298,43 @@ def fetch_hyperliquid_funding(
 
     return df
 
+def normalize_funding_rate(
+    df: pd.DataFrame,
+    col: str,
+    source: str,
+) -> pd.DataFrame:
+    """
+    Normalize funding rate to Binance convention (decimal per period).
+
+    Handles two issues:
+    1. Scale: some exchanges return percentages instead of decimals
+    2. Maturity: Hyperliquid is 1h, Binance is 8h (fixed in next commit)
+
+    Args:
+        df: DataFrame with funding rate column.
+        col: Column name.
+        source: "binance" or "hyperliquid".
+
+    Returns:
+        DataFrame with normalized funding rate.
+    """
+    if col not in df.columns or df[col].isna().all():
+        return df
+
+    median_abs = df[col].abs().median()
+
+    if source == "hyperliquid":
+        if median_abs > 0.01:
+            df[col] = df[col] / 100
+            logger.info("  Normalized %s: divided by 100 (percentage → decimal)", source)
+        elif median_abs > 1:
+            df[col] = df[col] / (365 * 3)
+            logger.info("  Normalized %s: de-annualized", source)
+        else:
+            logger.info("  %s funding already in decimal format", source)
+
+    return df
+
+
+
+
