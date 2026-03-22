@@ -342,4 +342,70 @@ def normalize_funding_rate(
 
 
 
+def fetch_binance_open_interest(
+    symbol: str,
+    start_date: str,
+    base_url: str,
+) -> pd.DataFrame:
+    """
+    Fetch historical open interest from Binance Futures.
+
+    Returns OI in COINS (not USD) to avoid the nominal illusion:
+    BTC $50k→$60k = USD OI +20% with zero new contracts.
+    Coin-margined OI measures true leverage.
+
+    Args:
+        symbol, start_date, base_url: all from config.
+
+    Returns:
+        DataFrame with open_interest_usd and open_interest_coins.
+    """
+    endpoint = f"{base_url}/futures/data/openInterestHist"
+    all_records = []
+
+    logger.info("Fetching %s open interest...", symbol)
+
+    current = pd.Timestamp(start_date, tz="UTC")
+    end = pd.Timestamp.now(tz="UTC")
+
+    while current < end:
+        chunk_end = min(current + pd.Timedelta(days=30), end)
+
+        params = {
+            "symbol": symbol, "period": "1d",
+            "startTime": int(current.timestamp() * 1000),
+            "endTime": int(chunk_end.timestamp() * 1000),
+            "limit": 500,
+        }
+
+        resp = request_with_retry("GET", endpoint, params=params)
+        data = resp.json()
+        if data:
+            all_records.extend(data)
+
+        current = chunk_end + pd.Timedelta(days=1)
+        time.sleep(0.1)
+
+    logger.info("  -> %d OI records for %s", len(all_records), symbol)
+
+    if not all_records:
+        logger.warning("No OI data for %s", symbol)
+        return pd.DataFrame(columns=["open_interest_usd", "open_interest_coins"])
+
+    df = pd.DataFrame(all_records)
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+    df = df.set_index("timestamp").sort_index()
+
+    df["open_interest_usd"] = pd.to_numeric(df["sumOpenInterestValue"], errors="coerce")
+    if "sumOpenInterest" in df.columns:
+        df["open_interest_coins"] = pd.to_numeric(df["sumOpenInterest"], errors="coerce")
+    else:
+        df["open_interest_coins"] = np.nan
+
+    df = df[["open_interest_usd", "open_interest_coins"]]
+    df = df[~df.index.duplicated(keep="first")]
+
+    return df
+
+
 
