@@ -400,4 +400,64 @@ def compute_drawdown(
 
 
 
+def compute_correlation(
+    btc_returns: pd.Series,
+    eth_returns: pd.Series,
+    window: int,
+) -> pd.DataFrame:
+    """
+    Rolling correlation BTC/ETH — Pearson, conditional, and Spearman.
+
+    Pearson alone is misleading: BTC/ETH correlation is ~0.60 in normal
+    markets but jumps to ~0.95+ during crashes (tail dependence).
+    The conditional correlation (BTC down vs BTC up) proves that
+    diversification is an illusion during crises.
+
+    Args:
+        btc_returns: BTC 1-period returns.
+        eth_returns: ETH 1-period returns.
+        window: Rolling window.
+
+    Returns:
+        DataFrame with Pearson, Spearman, and conditional correlations.
+    """
+    result = pd.DataFrame(index=btc_returns.index)
+
+    # Standard Pearson
+    result["btc_eth_corr_pearson"] = btc_returns.rolling(window, min_periods=window // 2).corr(eth_returns)
+
+    # Spearman rank correlation (robust to non-linearity)
+    def _rolling_spearman(x):
+        from scipy.stats import spearmanr
+        btc_w = x.iloc[:len(x)//2]
+        eth_w = x.iloc[len(x)//2:]
+        if len(btc_w) < 10:
+            return np.nan
+        corr, _ = spearmanr(btc_w, eth_w)
+        return corr
+
+    # Simpler approach: rank then Pearson = Spearman
+    btc_rank = btc_returns.rolling(window).rank()
+    eth_rank = eth_returns.rolling(window).rank()
+    result["btc_eth_corr_spearman"] = btc_rank.rolling(window, min_periods=window // 2).corr(eth_rank)
+
+    # Conditional correlation (key insight for market makers)
+    btc_down = btc_returns < 0
+    btc_up = btc_returns >= 0
+
+    # Correlation when BTC is falling (expect ~0.95)
+    btc_ret_down = btc_returns.where(btc_down)
+    eth_ret_down = eth_returns.where(btc_down)
+    result["btc_eth_corr_down"] = btc_ret_down.rolling(window * 2, min_periods=window // 2).corr(eth_ret_down)
+
+    # Correlation when BTC is rising (expect ~0.50)
+    btc_ret_up = btc_returns.where(btc_up)
+    eth_ret_up = eth_returns.where(btc_up)
+    result["btc_eth_corr_up"] = btc_ret_up.rolling(window * 2, min_periods=window // 2).corr(eth_ret_up)
+
+    return result
+
+
+
+
 
