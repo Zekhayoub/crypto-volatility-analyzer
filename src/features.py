@@ -303,6 +303,61 @@ def compute_funding_zscore_clipped(
     return pd.Series(zscore, index=funding.index,
                      name=f"{asset}_funding_zscore_clipped_{window}p")
 
+def compute_volume_profile(
+    volume: pd.Series,
+    windows: list[int],
+    asset: str,
+) -> pd.DataFrame:
+    """
+    Rolling volume moving averages and short/long ratio.
+
+    Args:
+        volume: Volume series.
+        windows: List of MA windows (e.g., [21, 90]).
+        asset: Asset prefix.
+
+    Returns:
+        DataFrame with MA columns and ratio.
+    """
+    result = pd.DataFrame(index=volume.index)
+
+    for w in windows:
+        result[f"{asset}_volume_ma_{w}p"] = volume.rolling(w, min_periods=w // 2).mean()
+
+    if len(windows) >= 2:
+        short_w, long_w = windows[0], windows[-1]
+        short_ma = result[f"{asset}_volume_ma_{short_w}p"]
+        long_ma = result[f"{asset}_volume_ma_{long_w}p"]
+        result[f"{asset}_volume_ratio_{short_w}p_{long_w}p"] = np.where(
+            long_ma > 0, short_ma / long_ma, 1.0
+        )
+
+    return result
+
+
+def compute_oi_volume_ratio(
+    oi_coins: pd.Series,
+    volume: pd.Series,
+    asset: str,
+) -> pd.Series:
+    """
+    Open Interest (in coins) / Volume ratio — leverage proxy.
+
+    Uses coin-denominated OI (not USD) to avoid the nominal illusion
+    where price appreciation inflates OI mechanically.
+
+    Args:
+        oi_coins: Open interest in coins (normalized in ingestion).
+        volume: Trading volume.
+        asset: Asset prefix.
+
+    Returns:
+        Series: {asset}_oi_volume_ratio
+    """
+    ratio = np.where(volume > 0, oi_coins / volume, np.nan)
+    return pd.Series(ratio, index=volume.index, name=f"{asset}_oi_volume_ratio")
+
+
 
 
 
