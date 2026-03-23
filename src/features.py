@@ -360,4 +360,44 @@ def compute_oi_volume_ratio(
 
 
 
+def compute_drawdown(
+    close: pd.Series,
+    asset: str,
+    local_window: int = 90,
+) -> pd.DataFrame:
+    """
+    Compute drawdown from ATH (global) and from rolling high (local).
+
+    Global ATH drawdown: useful for EDA visualization.
+    Local rolling drawdown (30d = 90 periods): useful for market makers.
+    A market maker doesn't care if BTC is -60% from ATH two years ago.
+    They care if the market is liquidating longs RIGHT NOW.
+
+    Args:
+        close: Close price series.
+        asset: Asset prefix.
+        local_window: Rolling window for local drawdown (default 90p = 30d).
+
+    Returns:
+        DataFrame with global and local drawdown columns.
+    """
+    result = pd.DataFrame(index=close.index)
+
+    # Global drawdown from ATH
+    running_max = close.cummax()
+    result[f"{asset}_drawdown_global"] = (close - running_max) / running_max
+
+    # Local rolling drawdown (what market makers watch)
+    rolling_max = close.rolling(local_window, min_periods=1).max()
+    result[f"{asset}_drawdown_local_{local_window}p"] = (close - rolling_max) / rolling_max
+
+    # Drawdown duration (consecutive periods below previous high)
+    is_dd = close < running_max
+    dd_groups = (~is_dd).cumsum()
+    result[f"{asset}_drawdown_duration"] = is_dd.groupby(dd_groups).cumsum()
+
+    return result
+
+
+
 
