@@ -214,33 +214,94 @@ def compute_garman_klass_volatility(
     return vol
 
 
-def compute_funding_zscore(
+# def compute_funding_zscore(
+#     funding: pd.Series,
+#     window: int,
+#     asset: str,
+# ) -> pd.Series:
+#     """
+#     Rolling z-score on funding rate.
+
+#     First version — will be replaced by empirical percentiles
+#     because the funding rate is CAPPED by exchange rules (~0.03%).
+#     When funding hits the cap for weeks, std crushes to zero and
+#     z-score explodes to +15σ artificially.
+
+#     Args:
+#         funding: Funding rate series.
+#         window: Rolling window.
+#         asset: Asset prefix.
+
+#     Returns:
+#         Series: {asset}_funding_zscore_{window}p
+#     """
+#     roll_mean = funding.rolling(window, min_periods=window // 2).mean()
+#     roll_std = funding.rolling(window, min_periods=window // 2).std()
+
+#     zscore = np.where(roll_std > 1e-10, (funding - roll_mean) / roll_std, 0.0)
+
+#     return pd.Series(zscore, index=funding.index, name=f"{asset}_funding_zscore_{window}p")
+
+
+
+def compute_funding_percentile(
     funding: pd.Series,
     window: int,
     asset: str,
 ) -> pd.Series:
     """
-    Rolling z-score on funding rate.
+    Rolling empirical percentile rank for funding rate.
 
-    First version — will be replaced by empirical percentiles
-    because the funding rate is CAPPED by exchange rules (~0.03%).
-    When funding hits the cap for weeks, std crushes to zero and
-    z-score explodes to +15σ artificially.
+    Used instead of z-score because the funding rate is CAPPED by
+    exchange rules. When funding hits the cap, std → 0 and z-score
+    explodes artificially. Percentiles make no distributional assumptions.
+
+    CRITICAL: Uses ROLLING window, not full-sample rank.
+    Full-sample rank() would be look-ahead bias (the percentile at
+    date t would include future information).
+
+    Args:
+        funding: Funding rate series.
+        window: Rolling lookback window.
+        asset: Asset prefix.
+
+    Returns:
+        Series between 0 and 1: {asset}_funding_pctile_{window}p
+    """
+    pctile = funding.rolling(window, min_periods=window // 2).rank() / window
+    pctile.name = f"{asset}_funding_pctile_{window}p"
+    return pctile
+
+
+def compute_funding_zscore_clipped(
+    funding: pd.Series,
+    window: int,
+    asset: str,
+    clip_value: float = 5.0,
+) -> pd.Series:
+    """
+    Rolling z-score on funding rate, clipped to ±clip_value.
+
+    SECONDARY indicator only. The primary metric is the rolling percentile.
+    Clipping prevents the +15σ artifacts when funding is capped.
 
     Args:
         funding: Funding rate series.
         window: Rolling window.
         asset: Asset prefix.
+        clip_value: Max absolute z-score value.
 
     Returns:
-        Series: {asset}_funding_zscore_{window}p
+        Series: {asset}_funding_zscore_clipped_{window}p
     """
     roll_mean = funding.rolling(window, min_periods=window // 2).mean()
     roll_std = funding.rolling(window, min_periods=window // 2).std()
 
     zscore = np.where(roll_std > 1e-10, (funding - roll_mean) / roll_std, 0.0)
+    zscore = np.clip(zscore, -clip_value, clip_value)
 
-    return pd.Series(zscore, index=funding.index, name=f"{asset}_funding_zscore_{window}p")
+    return pd.Series(zscore, index=funding.index,
+                     name=f"{asset}_funding_zscore_clipped_{window}p")
 
 
 
