@@ -459,5 +459,193 @@ def compute_correlation(
 
 
 
+def compute_range(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    asset: str,
+) -> pd.Series:
+    """
+    Intra-candle range: log(high/low) for the current period.
+
+    This is a SHORT-TERM volatility proxy used as HMM input feature.
+    Unlike rolling vol (which has multi-day lag), range captures
+    instantaneous volatility from a single 8h candle.
+
+    Args:
+        high, low, close: Price series.
+        asset: Asset prefix.
+
+    Returns:
+        Series: {asset}_range_1p
+    """
+    # Guard against corrupted data (high < low already handled, but safety)
+    ratio = np.where(low > 0, high / low, 1.0)
+    return pd.Series(np.log(ratio), index=close.index, name=f"{asset}_range_1p")
 
 
+
+
+def enrich_master(
+    df: pd.DataFrame,
+    trading_mask: pd.DataFrame | None = None,
+    config: dict = CONFIG,
+) -> pd.DataFrame:
+    """
+    Apply all feature engineering to the master DataFrame.
+
+    Steps:
+        1. Sanitize OHLC (drop corrupted klines)
+        2. Log returns
+        3. Realized volatility (trading periods only)
+        4. Parkinson and Garman-Klass (with wick bias note)
+        5. Funding rate percentiles (not z-score — funding is capped)
+        6. Volume profile and OI/volume
+        7. Drawdown (global + local 30d)
+        8. Correlation (Pearson + conditional + Spearman)
+        9. Intra-candle range (for HMM)
+        10. Drop warm-up NaN, assert quality
+
+    Args:
+        df: Master DataFrame from ingestion.
+        trading_mask: Boolean series for real trading periods.
+        config: Configuration dict.
+
+    Returns:
+        Enriched DataFrame with ~50+ columns.
+    """
+    logger.info("Starting feature engineering...")
+    result = df.copy()
+    feat_cfg = config["features"]
+
+    for asset in ASSETS:
+        close = f"{asset}_close"
+        high = f"{asset}_high"
+        low = f"{asset}_low"
+        opn = f"{asset}_open"
+
+        if close not in df.columns:
+            continue
+
+        # 1. Sanitize OHLC
+        result = sanitize_ohlc(result, asset)
+
+        # 2. Log returns
+        rets = compute_log_returns(result[close], feat_cfg["return_windows"], asset)
+        result = pd.concat([result, rets], axis=1)
+
+        # 3. Realized volatility (trading mask)
+        ret_1p = f"{asset}_return_1p"
+        if ret_1p in result.columns:
+            mask = trading_mask if trading_mask is not None else None
+            vol = compute_realized_volatility(
+                result[ret_1p], feat_cfg["volatility_windows"], asset,
+                feat_cfg["annualization_factor"], mask,
+            )
+            result = pd.concat([result, vol], axis=1)
+
+        # 4. Parkinson and Garman-Klass
+        if high in result.columns and low in result.columns:
+            for w in feat_cfg["volatility_windows"]:
+                pk = compute_parkinson_volatility(result[high], result[low], w, asset, feat_cfg["annualization_factor"])
+                result[pk.name] = pk
+
+            if opn in result.columns:
+                for w in feat_cfg["volatility_windows"]:
+                    gk = compute_garman_klass_volatility(
+                        result[opn], result[high], result[low], result[close],
+                        w, asset, feat_cfg["annualization_factor"],
+                    )
+                    result[gk.name] = gk
+
+        # 5. Range (for HMM)
+        if high in result.columns and low in result.columns:
+            rng = compute_range(result[high], result[low], result[close], asset)
+            result[rng.name] = rng
+
+        # 6. Funding rate
+        fr = f"{asset}_funding_rate"
+        if fr in result.columns:
+            pctile = compute_funding_percentile(result[fr], feat_cfg["funding_percentile_window"], asset)
+            result[pctile.name] = pctile
+
+            zscore_c = compute_funding_zscore_clipped(result[fr], feat_cfg["funding_percentile_window"], asset)
+            result[zscore_c.name] = zscore_c
+
+        # 7. Drawdown
+        dd = compute_drawdown(result[close], asset)
+        result = pd.concat([result, dd], axis=1)
+
+        logger.info("  %s: features computed", asset.upper())
+
+    # 8. Volume profile (BTC only for main metrics)
+    if "btc_volume" in result.columns:
+        vol_prof = compute_volume_profile(result["btc_volume"], feat_cfg["volume_ma_windows"], "btc")
+        result = pd.concat([result, vol_prof], axis=1)
+
+    # 9. OI/Volume ratio
+    if "btc_oi_coins" in result.columns and "btc_volume" in result.columns:
+        oi_ratio = compute_oi_volume_ratio(result["btc_oi_coins"], result["btc_volume"], "btc")
+        result[oi_ratio.name] = oi_ratio
+
+    # 10. Correlation BTC/ETH
+    btc_ret = "btc_return_1p"
+    eth_ret = "eth_return_1p"
+    if btc_ret in result.columns and eth_ret in result.columns:
+        corr = compute_correlation(result[btc_ret], result[eth_ret], feat_cfg["correlation_window"])
+        result = pd.concat([result, corr], axis=1)
+
+    # 11. Drop warm-up NaN
+    max_window = max(
+        max(feat_cfg["volatility_windows"]),
+        feat_cfg["funding_percentile_window"],
+        feat_cfg["correlation_window"],
+    )
+    rows_before = len(result)
+    result = result.dropna(subset=[f"btc_realized_vol_{feat_cfg['volatility_windows'][0]}p"])
+    logger.info("  Dropped %d warm-up rows", rows_before - len(result))
+
+    # 12. Assertions
+    numeric = result.select_dtypes(include=[np.number])
+    assert not np.isinf(numeric.values).any(), "Inf values in enriched DataFrame"
+    assert len(result) > 1000, f"Only {len(result)} rows after enrichment"
+
+    n_new = len(result.columns) - len(df.columns)
+    logger.info("Feature engineering complete: %d rows × %d cols (%d new)",
+                len(result), len(result.columns), n_new)
+
+    return result
+
+
+def run_features(config: dict = CONFIG) -> pd.DataFrame:
+    """Load master, enrich, save master_enriched.csv."""
+    proc_dir = PROJECT_ROOT / config["paths"]["processed"]
+
+    df = pd.read_csv(proc_dir / "master.csv", index_col=0, parse_dates=True)
+
+    mask_path = proc_dir / "trading_mask.csv"
+    trading_mask = None
+    if mask_path.exists():
+        trading_mask = pd.read_csv(mask_path, index_col=0, parse_dates=True).squeeze()
+        trading_mask = trading_mask.astype(bool).reindex(df.index).fillna(False)
+
+    enriched = enrich_master(df, trading_mask, config)
+
+    output = proc_dir / "master_enriched.csv"
+    enriched.to_csv(output)
+    logger.info("Saved: %s", output)
+
+    return enriched
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s [%(levelname)s] %(name)s — %(message)s")
+    df = run_features()
+    print(f"\nEnriched: {df.shape[0]} rows × {df.shape[1]} cols")
+    print(f"Columns:\n{list(df.columns)}")
+
+
+
+
+    
