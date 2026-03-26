@@ -190,6 +190,9 @@ def compute_garman_klass_volatility(
     # Try Rust implementation first
     try:
         from crypto_volatility_rust import garman_klass_volatility as _gk_rust
+        # CRITICAL: After dropna/filter, NumPy arrays may not be C-contiguous.
+        # Rust FFI (PyReadonlyArray1) requires contiguous memory.
+        # Without this, you get: ValueError: ndarray is not C-contiguous
         result = _gk_rust(
             np.ascontiguousarray(open_price.values, dtype=np.float64),
             np.ascontiguousarray(high.values, dtype=np.float64),
