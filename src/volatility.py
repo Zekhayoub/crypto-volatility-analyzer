@@ -23,21 +23,26 @@ def fit_garch(
     returns: pd.Series,
     p: int,
     q: int,
+    o: int = 0,
     dist: str = "t",
     rescale: bool = True,
 ) -> object:
     """
-    Fit a GARCH(p,q) model on return series.
+    Fit a GJR-GARCH(p,o,q) model on return series.
 
-    First version: symmetric GARCH. Will be upgraded to GJR-GARCH
-    in a subsequent commit when we discover the leverage asymmetry.
+    The GJR variant adds an asymmetry term (gamma) that penalizes
+    negative shocks more than positive ones. In crypto, -10% triggers
+    liquidation cascades that amplify volatility far more than +10%.
+
+    σ²_t = ω + α*ε²_{t-1} + γ*ε²_{t-1}*I(ε<0) + β*σ²_{t-1}
+
+    If gamma > 0 (expected in crypto), negative shocks increase vol more.
 
     Args:
-        returns: Log return series (1-period).
-        p: GARCH lag order.
-        q: ARCH lag order.
-        dist: Error distribution ("normal", "t", "skewt").
-        rescale: If True, multiply returns by 100 before fitting.
+        returns: Log return series.
+        p: GARCH lag. q: ARCH lag. o: Asymmetry lag (1 for GJR).
+        dist: Error distribution.
+        rescale: Multiply returns by 100.
 
     Returns:
         Fitted ARCHModelResult.
@@ -45,23 +50,21 @@ def fit_garch(
     clean = returns.dropna().replace([np.inf, -np.inf], np.nan).dropna()
 
     if len(clean) < 500:
-        raise ValueError(f"Not enough observations for GARCH: {len(clean)} (need 500+)")
+        raise ValueError(f"Not enough data: {len(clean)}")
 
     if rescale:
         clean = clean * 100
-        logger.info("  Rescaled returns to percentage (× 100) for optimizer stability")
 
-    model = arch_model(clean, vol="Garch", p=p, q=q, dist=dist, rescale=False)
+    vol_type = "GJR-Garch" if o > 0 else "Garch"
+    model = arch_model(clean, vol=vol_type, p=p, o=o, q=q, dist=dist, rescale=False)
 
     result = model.fit(disp="off", show_warning=False)
 
     if result.convergence_flag != 0:
-        logger.warning("  GARCH did not converge (flag=%d)", result.convergence_flag)
+        logger.warning("  %s did not converge (flag=%d)", vol_type, result.convergence_flag)
 
-    logger.info("  GARCH(%d,%d) fitted: AIC=%.2f, BIC=%.2f",
-                p, q, result.aic, result.bic)
+    logger.info("  %s(%d,%d,%d) fitted: AIC=%.2f", vol_type, p, o, q, result.aic)
 
     return result
-
 
 
