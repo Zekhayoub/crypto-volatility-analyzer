@@ -68,3 +68,64 @@ def fit_garch(
     return result
 
 
+def compute_ewma_volatility(
+    returns: pd.Series,
+    span: int = 42,
+    ann_factor: int = 1095,
+) -> pd.Series:
+    """
+    EWMA volatility as fallback when GARCH fails to converge.
+
+    Args:
+        returns: 1-period returns.
+        span: EWMA span.
+        ann_factor: Annualization factor.
+
+    Returns:
+        Annualized EWMA volatility series.
+    """
+    ewma_var = returns.ewm(span=span).var()
+    vol = np.sqrt(ewma_var) * np.sqrt(ann_factor)
+    return vol
+
+
+def fit_garch_safe(
+    returns: pd.Series,
+    config: dict = CONFIG,
+    asset: str = "btc",
+) -> tuple[object | None, pd.Series]:
+    """
+    Fit GJR-GARCH with fallback to EWMA on convergence failure.
+
+    Args:
+        returns: 1-period returns.
+        config: Configuration.
+        asset: Asset name for logging.
+
+    Returns:
+        Tuple of (ARCHModelResult or None, conditional volatility series).
+    """
+    vol_cfg = config["volatility"]
+
+    try:
+        result = fit_garch(
+            returns, p=vol_cfg["garch_p"], q=vol_cfg["garch_q"],
+            o=vol_cfg["garch_o"], dist=vol_cfg["distribution"],
+            rescale=vol_cfg["rescale"],
+        )
+        # Extract conditional volatility
+        cond_vol = result.conditional_volatility
+        if vol_cfg["rescale"]:
+            cond_vol = cond_vol / 100  # back to decimal
+        cond_vol = cond_vol * np.sqrt(1095)  # annualize
+
+        logger.info("  %s: GJR-GARCH converged", asset.upper())
+        return result, cond_vol
+
+    except Exception as e:
+        logger.warning("  %s: GJR-GARCH failed (%s) — falling back to EWMA", asset.upper(), e)
+        ewma_vol = compute_ewma_volatility(returns)
+        return None, ewma_vol
+    
+
+    
